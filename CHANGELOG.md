@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-10-07
+
+### Changed
+- Plain letter keys instead of function keys: `h` help, `/` search, `s` sort,
+  `t` tree, `z` all, `c` command line, `i` swap in, `o` swap out, `F` flush,
+  `k` signal, `q` quit.
+
 ## 1.0.0 — 2026-10-07
 
 First release.

@@ -97,7 +97,7 @@ func sortIndex(name string) int {
 func main() {
 	cfg := loadConfig()
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: swaptop [-d SECONDS] [-s COLUMN] [-t] [-z] [--version]\n\nhtop-style view of swap usage per process. Press F1 inside for keys.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: swaptop [-d SECONDS] [-s COLUMN] [-t] [-z] [--version]\n\nhtop-style view of swap usage per process. Press h inside for keys.\n\n")
 		flag.PrintDefaults()
 	}
 	delay := flag.Float64("d", cfg.Refresh, "refresh interval in seconds")
@@ -399,24 +399,6 @@ func (a *app) key(ev *tcell.EventKey) bool {
 		}
 	case tcell.KeyEscape:
 		a.view = viewList
-	case tcell.KeyF1:
-		a.view = viewHelp
-	case tcell.KeyF2:
-		a.askFlush()
-	case tcell.KeyF3:
-		a.searching = true
-	case tcell.KeyF5:
-		a.toggleTree()
-	case tcell.KeyF6:
-		a.cycleSort()
-	case tcell.KeyF7:
-		a.askSwapIn()
-	case tcell.KeyF8:
-		a.askSwapOut()
-	case tcell.KeyF9:
-		a.askKill()
-	case tcell.KeyF10:
-		return true
 	case tcell.KeyRune:
 		switch ev.Rune() {
 		case 'q':
@@ -515,7 +497,7 @@ func (a *app) askSwapIn() {
 				}
 			})
 			if err == nil {
-				set(fmt.Sprintf("Swapped in %s (%d) in %s. Its slots stay 'cached' until the kernel drops them or you flush (F2).",
+				set(fmt.Sprintf("Swapped in %s (%d) in %s. Its slots stay 'cached' until the kernel drops them or you flush (F).",
 					p.Comm, p.PID, time.Since(start).Round(100*time.Millisecond)))
 			}
 			return err
@@ -861,14 +843,14 @@ func (a *app) drawHelp() {
 		"  magenta   not owned by any process: tmpfs/shm files, or slots whose owner we cannot read",
 		"",
 		"Actions (each asks for confirmation)",
-		"  F7 i      swap in:  fault every swapped page of the process back into RAM (reads /proc/PID/mem)",
-		"  F8 o      swap out: ask the kernel to reclaim the process's pages now (process_madvise MADV_PAGEOUT, Linux 5.10+)",
-		"  F2 F      flush:    swapoff + swapon every device, emptying swap completely (root, needs enough free RAM)",
-		"  F9 k      send a signal (picker)",
+		"  i         swap in:  fault every swapped page of the process back into RAM (reads /proc/PID/mem)",
+		"  o         swap out: ask the kernel to reclaim the process's pages now (process_madvise MADV_PAGEOUT, Linux 5.10+)",
+		"  F         flush:    swapoff + swapon every device, emptying swap completely (root, needs enough free RAM)",
+		"  k         send a signal (picker)",
 		"",
 		"Keys",
 		"  Up/Down PgUp/PgDn Home/End  move          Enter  per-mapping breakdown of the selected process",
-		"  F3 /  search     F6 s  sort     F5 t  tree view     z  show/hide processes with no swap     c  full command line     F10 q  quit",
+		"  /  search     s  sort     t  tree view     z  show/hide processes with no swap     c  full command line     h  help     q  quit / back",
 		"",
 		"Settings (sort, tree, z, c, refresh) are saved to " + configPath() + " on exit.",
 		"Non-root: SWPPSS and actions only work for your own processes (kernel.yama.ptrace_scope).",
@@ -891,13 +873,13 @@ func (a *app) drawBottom(w, h int) {
 		a.put(0, y, "Search: "+a.filter+"_", stWarn)
 		return
 	}
-	keys := [][2]string{{"F1", "Help"}, {"F2", "Flush"}, {"F3", "Search"}, {"F5", "Tree"}, {"F6", "SortBy"}, {"F7", "SwapIn"}, {"F8", "SwapOut"}, {"F9", "Kill"}, {"F10", "Quit"}}
+	keys := [][2]string{{"h", "Help"}, {"/", "Search"}, {"s", "Sort"}, {"t", "Tree"}, {"z", "All"}, {"c", "Cmd"}, {"i", "SwapIn"}, {"o", "SwapOut"}, {"F", "Flush"}, {"k", "Kill"}, {"q", "Quit"}}
 	if a.view != viewList {
-		keys = [][2]string{{"Esc", "Back"}, {"F7", "SwapIn"}, {"F8", "SwapOut"}, {"F9", "Kill"}, {"F10", "Quit"}}
+		keys = [][2]string{{"q", "Back"}, {"i", "SwapIn"}, {"o", "SwapOut"}, {"k", "Kill"}}
 	}
 	x := 0
 	for _, k := range keys {
-		x = a.put(x, y, fmt.Sprintf("%3s", k[0]), stKey)
+		x = a.put(x, y, " "+k[0], stKey)
 		x = a.put(x, y, fmt.Sprintf("%-7s", k[1]), stFn)
 	}
 }

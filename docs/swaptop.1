@@ -1,5 +1,5 @@
 .\" Manual page for swaptop. View with: man -l docs/swaptop.1
-.TH SWAPTOP 1 "October 2026" "swaptop 1.0.0" "User Commands"
+.TH SWAPTOP 1 "October 2026" "swaptop 1.0.1" "User Commands"
 .SH NAME
 swaptop \- htop\-style view of which processes are using swap, and how
 .SH SYNOPSIS
@@ -26,8 +26,8 @@ and
 .IR /proc/PID/smaps .
 Nothing is written anywhere except the configuration file (see
 .BR FILES ).
-Actions that change memory placement are available from the function keys
-and always ask for confirmation first.
+Actions that change memory placement are bound to single letter keys and
+always ask for confirmation first.
 .PP
 Running as root (\fBsudo swaptop\fR) is recommended: without it the kernel
 hides the detailed figures and memory of other users' processes (see
@@ -147,19 +147,19 @@ Move the selection.
 .B Enter
 Per\-mapping breakdown of the selected process. \fBEsc\fR or \fBq\fR returns.
 .TP
-.B F1, h, ?
+.B h, ?
 Help.
 .TP
-.B F3, /
+.B /
 Incremental search over command line, name, user and PID. \fBEnter\fR keeps
 the filter, \fBEsc\fR clears it.
 .TP
-.B F5, t
+.B t
 Toggle tree view. In tree view a process is shown when it or any of its
 descendants matches, so parents stay for context; processes without swap are
 dimmed.
 .TP
-.B F6, s
+.B s
 Cycle the sort column.
 .TP
 .B z
@@ -168,12 +168,12 @@ Toggle between processes with swap only (the default) and all processes.
 .B c
 Toggle between the command name and the full command line.
 .TP
-.B F10, q
+.B q
 Quit, saving the current settings.
 .SH ACTIONS
 Each action asks for confirmation before doing anything.
 .TP
-.B F7, i \(em swap in
+.B i \(em swap in
 Faults every swapped page of the selected process back into RAM by reading
 it through
 .IR /proc/PID/mem .
@@ -183,7 +183,7 @@ so nothing else is touched. Afterwards the process runs at full speed again.
 Its swap slots usually remain allocated as swap cache (yellow in the bar)
 until the kernel needs them or the device is flushed.
 .TP
-.B F8, o \(em swap out
+.B o \(em swap out
 Asks the kernel to reclaim the selected process's resident memory now, with
 .BR process_madvise (2)
 .BR MADV_PAGEOUT
@@ -191,7 +191,7 @@ Asks the kernel to reclaim the selected process's resident memory now, with
 pages are simply dropped. The process keeps running and faults its memory
 back as it touches it. Useful for parking an idle but large process.
 .TP
-.B F2, F \(em flush
+.B F \(em flush
 Empties every swap device completely by calling
 .BR swapoff (2)
 and then
@@ -204,7 +204,7 @@ priority is kept; other
 .BR swapon (8)
 options such as discard are not reapplied. Needs root.
 .TP
-.B F9, k \(em signal
+.B k \(em signal
 Opens a picker of common signals (TERM, KILL, INT, HUP, QUIT, USR1, USR2,
 STOP, CONT) to send to the selected process.
 .SH PERMISSIONS
@@ -258,7 +258,7 @@ option.
 .SH NOTES
 Swap cache explains most apparent mismatches: a process can show 0 in
 \fBSWAP\fR while the device's usage barely drops, because the slots are kept
-until needed. Flushing (\fBF2\fR) is the only way to release them on demand.
+until needed. Flushing (\fBF\fR) is the only way to release them on demand.
 .PP
 The \fBSWAP\fR column of processes sharing memory (database workers, for
 example) double counts that memory, by design, so that each process shows

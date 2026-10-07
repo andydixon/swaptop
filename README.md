@@ -11,10 +11,10 @@ zram figures appear when present. Each process shows its SWAP, proportional
 SWPPSS, DELTA since the last refresh, RSS and how much of it is in swap;
 `Enter` breaks a process down by mapping (heap, stacks, libraries, files).
 
-Actions, each confirmed first: swap a process back in (`F7`), page a process
-out (`F8`, `process_madvise`, Linux 5.10+), flush every swap device with
-swapoff+swapon (`F2`), send a signal (`F9`). Search (`/`), sort (`F6`), tree
-view (`F5`), zero-swap toggle (`z`), full command line (`c`). Settings
+Actions, each confirmed first: swap a process back in (`i`), page a process
+out (`o`, `process_madvise`, Linux 5.10+), flush every swap device with
+swapoff+swapon (`F`), send a signal (`k`). Search (`/`), sort (`s`), tree
+view (`t`), zero-swap toggle (`z`), full command line (`c`), help (`h`). Settings
 persist in `~/.config/swaptop/config`. See `man swaptop`.
 
 Run it as root to see every process and use the actions:
