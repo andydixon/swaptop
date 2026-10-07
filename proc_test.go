@@ -21,3 +21,28 @@ Swap:                  0 kB
 		t.Fatal("parseKV")
 	}
 }
+
+func TestTree(t *testing.T) {
+	a := &app{hideZero: true, sys: &Sys{Procs: []Proc{
+		{PID: 1, PPID: 0, Comm: "init"},
+		{PID: 2, PPID: 1, Comm: "a", Swap: 10},
+		{PID: 3, PPID: 2, Comm: "b", Swap: 5},
+		{PID: 4, PPID: 1, Comm: "c"}, // no swap anywhere below: hidden
+	}}, tree: true}
+	a.rebuild()
+	if len(a.rows) != 3 || a.rows[0].PID != 1 || a.rows[1].Tree != "└─ " || a.rows[2].Tree != "   └─ " {
+		t.Fatalf("bad tree: %+v", a.rows)
+	}
+}
+
+func TestConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	c := defaults
+	c.Sort, c.Tree, c.Refresh = "RSS", true, 0.5
+	if err := c.save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadConfig(); got != c {
+		t.Fatalf("round trip: %+v != %+v", got, c)
+	}
+}

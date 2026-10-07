@@ -1,0 +1,277 @@
+.\" Manual page for swaptop. View with: man -l docs/swaptop.1
+.TH SWAPTOP 1 "October 2026" "swaptop 1.0.0" "User Commands"
+.SH NAME
+swaptop \- htop\-style view of which processes are using swap, and how
+.SH SYNOPSIS
+.B swaptop
+[\fB\-d\fR \fISECONDS\fR] [\fB\-s\fR \fICOLUMN\fR] [\fB\-t\fR] [\fB\-z\fR]
+.br
+.B swaptop
+\fB\-\-version\fR
+.SH DESCRIPTION
+.B swaptop
+is a full\-screen terminal monitor, laid out like
+.BR htop (1),
+that breaks swap usage down by process and by kind. It answers three
+questions: how much swap is in use, which processes own it, and how much of
+that is really swapped out to the device rather than merely reserved.
+.PP
+It reads
+.IR /proc/meminfo ,
+.IR /proc/swaps
+and, for every process,
+.IR /proc/PID/status ,
+.IR /proc/PID/smaps_rollup
+and
+.IR /proc/PID/smaps .
+Nothing is written anywhere except the configuration file (see
+.BR FILES ).
+Actions that change memory placement are available from the function keys
+and always ask for confirmation first.
+.PP
+Running as root (\fBsudo swaptop\fR) is recommended: without it the kernel
+hides the detailed figures and memory of other users' processes (see
+.BR PERMISSIONS ).
+.SH OPTIONS
+Every option overrides the value loaded from the configuration file.
+.TP
+.BI \-d " SECONDS"
+Refresh interval. Fractions are allowed. Default 2.
+.TP
+.BI \-s " COLUMN"
+Sort column, one of
+.BR SWAP ,
+.BR SWPPSS ,
+.BR DELTA ,
+.BR RSS ,
+.BR SWAPPED ,
+.BR PID ,
+.BR USER ,
+.BR COMMAND .
+Default \fBSWAP\fR.
+.TP
+.B \-t
+Start in tree view, processes arranged under their parents.
+.TP
+.B \-z
+Show every process, not only those with memory in swap.
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.B \-h
+Print a short usage message and exit.
+.SH DISPLAY
+.SS Header
+.TP
+.B Swp
+Swap in use out of the total, as a bar coloured by kind:
+.RS
+.TP
+green
+attributed to processes.
+.TP
+yellow
+swap cache: pages that are in RAM \fIand\fR still hold a swap slot. They
+have been read back in (or were written out ahead of time) and the slot is
+kept so they need not be written again. This is "reserved" swap: it costs
+nothing to drop and the kernel does so as soon as the device fills up.
+.TP
+magenta
+owned by no process: swapped tmpfs and shared memory files, or slots whose
+owner cannot be read without root.
+.RE
+.TP
+.B Mem
+RAM in use, buffers and page cache, as in
+.BR htop .
+.TP
+.B zswap
+Shown when zswap is active: how much of the used swap is actually held
+compressed in RAM rather than on the device.
+.TP
+Devices
+One line per entry in
+.IR /proc/swaps
+with size, usage and priority. zram devices also show the uncompressed and
+compressed sizes.
+.TP
+Commit
+Committed address space against the commit limit, then the number of
+processes with memory in swap and the current sort order.
+.SS Columns
+.TP
+.B PID
+Process ID.
+.TP
+.B USER
+Owner.
+.TP
+.B SWAP
+Swapped memory this process maps: its own anonymous pages plus any shared
+memory (shmem, tmpfs, SysV) it has mapped. Shared memory is counted in every
+process that maps it.
+.TP
+.B SWPPSS
+Proportional set size of the process's anonymous swap: pages shared with
+other processes (after
+.BR fork (2))
+are split between them, so this column sums to the real total. Shared
+memory files are not counted. Shown as \fB\-\fR when it cannot be read.
+.TP
+.B DELTA
+Change in \fBSWAP\fR since the previous refresh. Red means the process is
+being swapped out, green that it is coming back in.
+.TP
+.B RSS
+Resident memory, in RAM.
+.TP
+.B SWAPPED
+Share of the process's memory (\fBSWAP\fR plus \fBRSS\fR) that is in swap
+right now, as a bar and a percentage.
+.TP
+.B COMMAND
+Command name, or the full command line after pressing \fBc\fR. In tree
+view it is indented under the parent process.
+.SS Detail view
+.B Enter
+opens a breakdown of the selected process by memory mapping, sorted by
+swap: heap, stacks, shared libraries, anonymous regions and files, each with
+its swap, proportional swap and resident sizes. This shows \fIwhat\fR has
+been swapped out, not just how much.
+.SH KEYS
+.TP
+.B Up, Down, PgUp, PgDn, Home, End
+Move the selection.
+.TP
+.B Enter
+Per\-mapping breakdown of the selected process. \fBEsc\fR or \fBq\fR returns.
+.TP
+.B F1, h, ?
+Help.
+.TP
+.B F3, /
+Incremental search over command line, name, user and PID. \fBEnter\fR keeps
+the filter, \fBEsc\fR clears it.
+.TP
+.B F5, t
+Toggle tree view. In tree view a process is shown when it or any of its
+descendants matches, so parents stay for context; processes without swap are
+dimmed.
+.TP
+.B F6, s
+Cycle the sort column.
+.TP
+.B z
+Toggle between processes with swap only (the default) and all processes.
+.TP
+.B c
+Toggle between the command name and the full command line.
+.TP
+.B F10, q
+Quit, saving the current settings.
+.SH ACTIONS
+Each action asks for confirmation before doing anything.
+.TP
+.B F7, i \(em swap in
+Faults every swapped page of the selected process back into RAM by reading
+it through
+.IR /proc/PID/mem .
+The pages to read are found with
+.IR /proc/PID/pagemap
+so nothing else is touched. Afterwards the process runs at full speed again.
+Its swap slots usually remain allocated as swap cache (yellow in the bar)
+until the kernel needs them or the device is flushed.
+.TP
+.B F8, o \(em swap out
+Asks the kernel to reclaim the selected process's resident memory now, with
+.BR process_madvise (2)
+.BR MADV_PAGEOUT
+(Linux 5.10 or later). Anonymous memory is written to swap; clean file\-backed
+pages are simply dropped. The process keeps running and faults its memory
+back as it touches it. Useful for parking an idle but large process.
+.TP
+.B F2, F \(em flush
+Empties every swap device completely by calling
+.BR swapoff (2)
+and then
+.BR swapon (2)
+on each, in order. Everything in swap is pulled back into RAM and every slot,
+including swap cache, is released.
+.B swaptop
+refuses if available RAM is smaller than the swap in use. Each device's
+priority is kept; other
+.BR swapon (8)
+options such as discard are not reapplied. Needs root.
+.TP
+.B F9, k \(em signal
+Opens a picker of common signals (TERM, KILL, INT, HUP, QUIT, USR1, USR2,
+STOP, CONT) to send to the selected process.
+.SH PERMISSIONS
+Reading another user's
+.IR smaps_rollup ,
+.IR smaps ,
+.IR mem
+and
+.I pagemap
+requires ptrace access to that process, which on most systems
+(\fIkernel.yama.ptrace_scope\fR = 1) means root or
+.BR CAP_SYS_PTRACE .
+Without it the header reports how many swapped processes could not be read,
+their \fBSWPPSS\fR shows \fB\-\fR and their \fBSWAP\fR counts anonymous
+memory only; swap in and the detail view fail with a hint to use
+.BR sudo .
+Swap out additionally needs
+.BR CAP_SYS_NICE ,
+and flush needs
+.BR CAP_SYS_ADMIN .
+.SH CONFIGURATION
+Settings are read from the file below at start\-up and written back when
+.B swaptop
+exits, so the sort order, tree view, zero\-swap filter, command\-line display
+and refresh interval persist between runs. The file holds one
+.I key = value
+per line and may be edited by hand:
+.PP
+.nf
+    sort = SWAP          # see \-s for the names
+    hide_zero = true     # false shows every process
+    full_cmd = false
+    tree = false
+    refresh = 2          # seconds
+.fi
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/swaptop/config
+Configuration, normally
+.IR ~/.config/swaptop/config .
+When run under
+.BR sudo (8)
+this is root's home unless \fBXDG_CONFIG_HOME\fR is passed through.
+.TP
+.IR /proc/meminfo ", " /proc/swaps ", " /proc/PID/*
+Data sources. See
+.BR proc (5).
+.SH EXIT STATUS
+0 on a normal quit, 1 if the terminal cannot be initialised, 2 on a bad
+option.
+.SH NOTES
+Swap cache explains most apparent mismatches: a process can show 0 in
+\fBSWAP\fR while the device's usage barely drops, because the slots are kept
+until needed. Flushing (\fBF2\fR) is the only way to release them on demand.
+.PP
+The \fBSWAP\fR column of processes sharing memory (database workers, for
+example) double counts that memory, by design, so that each process shows
+what it would have to fault in. The header's "in processes" figure uses
+\fBSWPPSS\fR and does not double count.
+.SH SEE ALSO
+.BR htop (1),
+.BR free (1),
+.BR vmstat (8),
+.BR swapon (8),
+.BR proc (5),
+.BR process_madvise (2)
+.SH AUTHOR
+Andy Dixon <andy@dixon.cx>, https://www.dixon.cx
+.SH BUGS
+Report at https://github.com/andydixon/swaptop/issues

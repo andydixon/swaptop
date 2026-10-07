@@ -19,7 +19,8 @@ type SwapDev struct {
 }
 
 type Proc struct {
-	PID, UID           int
+	PID, PPID, UID     int
+	Tree               string // tree-view prefix, display only
 	User, Comm, Cmd    string
 	Swap, SwapPss, RSS uint64
 	Delta              int64 // change in Swap since previous sample
@@ -88,6 +89,8 @@ func readProc(pid int) (Proc, bool) {
 		switch k {
 		case "Name":
 			p.Comm = v
+		case "PPid":
+			p.PPID, _ = strconv.Atoi(v)
 		case "Uid":
 			p.UID, _ = strconv.Atoi(strings.Fields(v)[0])
 		case "VmRSS":

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+var version = "dev"
+
 type view int
 
 const (
@@ -22,14 +25,28 @@ const (
 
 var sortNames = []string{"SWAP", "SWPPSS", "DELTA", "RSS", "SWAPPED", "PID", "USER", "COMMAND"}
 
+var signals = []struct {
+	name string
+	sig  syscall.Signal
+}{
+	{"SIGTERM", syscall.SIGTERM}, {"SIGKILL", syscall.SIGKILL}, {"SIGINT", syscall.SIGINT}, {"SIGHUP", syscall.SIGHUP},
+	{"SIGQUIT", syscall.SIGQUIT}, {"SIGUSR1", syscall.SIGUSR1}, {"SIGUSR2", syscall.SIGUSR2},
+	{"SIGSTOP", syscall.SIGSTOP}, {"SIGCONT", syscall.SIGCONT},
+}
+
+// modal is a yes/no question (onYes), an info box (neither) or a picker (items/onPick).
 type modal struct {
-	title string
-	lines []string
-	onYes func() // nil = info box
+	title  string
+	lines  []string
+	onYes  func()
+	items  []string
+	pick   int
+	onPick func(int)
 }
 
 type app struct {
 	scr            tcell.Screen
+	cfg            config
 	sys            *Sys
 	prev           map[int]uint64
 	rows           []Proc
@@ -39,6 +56,7 @@ type app struct {
 	searching      bool
 	hideZero       bool
 	fullCmd        bool
+	tree           bool
 	view           view
 	detail         Proc
 	maps           []Mapping
@@ -67,7 +85,37 @@ var (
 	stRed     = tcell.StyleDefault.Foreground(tcell.ColorRed)
 )
 
+func sortIndex(name string) int {
+	for i, n := range sortNames {
+		if n == strings.ToUpper(name) {
+			return i
+		}
+	}
+	return 0
+}
+
 func main() {
+	cfg := loadConfig()
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: swaptop [-d SECONDS] [-s COLUMN] [-t] [-z] [--version]\n\nhtop-style view of swap usage per process. Press F1 inside for keys.\n\n")
+		flag.PrintDefaults()
+	}
+	delay := flag.Float64("d", cfg.Refresh, "refresh interval in seconds")
+	sortFlag := flag.String("s", cfg.Sort, "sort column: "+strings.Join(sortNames, ", "))
+	tree := flag.Bool("t", cfg.Tree, "show the process tree")
+	all := flag.Bool("z", !cfg.HideZero, "show processes with no swap too")
+	ver := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+	if *ver {
+		fmt.Println("swaptop", version)
+		return
+	}
+	if *delay <= 0 {
+		fmt.Fprintln(os.Stderr, "swaptop: -d must be positive")
+		os.Exit(2)
+	}
+	cfg.Refresh = *delay
+
 	scr, err := tcell.NewScreen()
 	if err == nil {
 		err = scr.Init()
@@ -76,8 +124,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "swaptop:", err)
 		os.Exit(1)
 	}
-	defer scr.Fini()
-	a := &app{scr: scr, hideZero: true}
+	a := &app{scr: scr, cfg: cfg, sortBy: sortIndex(*sortFlag), tree: *tree, hideZero: !*all, fullCmd: cfg.FullCmd}
 	a.sample()
 	events := make(chan tcell.Event, 64)
 	go func() {
@@ -89,17 +136,23 @@ func main() {
 			events <- ev
 		}
 	}()
-	tick := time.NewTicker(2 * time.Second)
+	tick := time.NewTicker(time.Duration(cfg.Refresh * float64(time.Second)))
+loop:
 	for {
 		a.draw()
 		select {
 		case ev := <-events:
 			if a.handle(ev) {
-				return
+				break loop
 			}
 		case <-tick.C:
 			a.sample()
 		}
+	}
+	scr.Fini()
+	cfg.Sort, cfg.HideZero, cfg.FullCmd, cfg.Tree = sortNames[a.sortBy], a.hideZero, a.fullCmd, a.tree
+	if err := cfg.save(); err != nil {
+		fmt.Fprintln(os.Stderr, "swaptop: saving config:", err)
 	}
 }
 
@@ -127,46 +180,119 @@ func pct(p Proc) int {
 	return int(p.Swap * 100 / (p.Swap + p.RSS))
 }
 
+func (a *app) less(x, y Proc) bool {
+	switch sortNames[a.sortBy] {
+	case "SWPPSS":
+		return x.SwapPss > y.SwapPss
+	case "DELTA":
+		return x.Delta > y.Delta
+	case "RSS":
+		return x.RSS > y.RSS
+	case "SWAPPED":
+		return pct(x) > pct(y)
+	case "PID":
+		return x.PID < y.PID
+	case "USER":
+		return x.User < y.User
+	case "COMMAND":
+		return x.Comm < y.Comm
+	}
+	return x.Swap > y.Swap
+}
+
+func (a *app) visible(p Proc) bool {
+	if a.hideZero && p.Swap == 0 {
+		return false
+	}
+	f := strings.ToLower(a.filter)
+	return f == "" || strings.Contains(strings.ToLower(p.Cmd+" "+p.Comm+" "+p.User+" "+fmt.Sprint(p.PID)), f)
+}
+
 func (a *app) rebuild() {
 	selPID := -1
 	if a.sel < len(a.rows) {
 		selPID = a.rows[a.sel].PID
 	}
 	a.rows = a.rows[:0]
-	f := strings.ToLower(a.filter)
-	for _, p := range a.sys.Procs {
-		if a.hideZero && p.Swap == 0 {
-			continue
+	if a.tree {
+		a.buildTree()
+	} else {
+		for _, p := range a.sys.Procs {
+			if a.visible(p) {
+				a.rows = append(a.rows, p)
+			}
 		}
-		if f != "" && !strings.Contains(strings.ToLower(p.Cmd+" "+p.Comm+" "+p.User+" "+fmt.Sprint(p.PID)), f) {
-			continue
-		}
-		a.rows = append(a.rows, p)
+		sort.SliceStable(a.rows, func(i, j int) bool { return a.less(a.rows[i], a.rows[j]) })
 	}
-	sort.SliceStable(a.rows, func(i, j int) bool {
-		x, y := a.rows[i], a.rows[j]
-		switch sortNames[a.sortBy] {
-		case "SWPPSS":
-			return x.SwapPss > y.SwapPss
-		case "DELTA":
-			return x.Delta > y.Delta
-		case "RSS":
-			return x.RSS > y.RSS
-		case "SWAPPED":
-			return pct(x) > pct(y)
-		case "PID":
-			return x.PID < y.PID
-		case "USER":
-			return x.User < y.User
-		case "COMMAND":
-			return x.Comm < y.Comm
-		}
-		return x.Swap > y.Swap
-	})
 	a.sel = 0
 	for i, p := range a.rows {
 		if p.PID == selPID {
 			a.sel = i
+		}
+	}
+}
+
+// buildTree lays processes out by parent, htop style. A process is shown if it
+// or any descendant passes the filter, so ancestors stay for context.
+func (a *app) buildTree() {
+	kids := map[int][]Proc{}
+	present := map[int]bool{}
+	for _, p := range a.sys.Procs {
+		present[p.PID] = true
+	}
+	for _, p := range a.sys.Procs {
+		kids[p.PPID] = append(kids[p.PPID], p)
+	}
+	for _, k := range kids {
+		sort.SliceStable(k, func(i, j int) bool { return a.less(k[i], k[j]) })
+	}
+	keep := map[int]bool{}
+	var mark func(p Proc) bool
+	mark = func(p Proc) bool {
+		ok := a.visible(p)
+		for _, c := range kids[p.PID] {
+			if mark(c) {
+				ok = true
+			}
+		}
+		keep[p.PID] = ok
+		return ok
+	}
+	var walk func(p Proc, prefix string, branch string)
+	walk = func(p Proc, prefix, branch string) {
+		p.Tree = prefix + branch
+		a.rows = append(a.rows, p)
+		var shown []Proc
+		for _, c := range kids[p.PID] {
+			if keep[c.PID] {
+				shown = append(shown, c)
+			}
+		}
+		childPrefix := prefix
+		if branch != "" {
+			childPrefix += "│  "
+			if branch == "└─ " {
+				childPrefix = prefix + "   "
+			}
+		}
+		for i, c := range shown {
+			b := "├─ "
+			if i == len(shown)-1 {
+				b = "└─ "
+			}
+			walk(c, childPrefix, b)
+		}
+	}
+	var roots []Proc
+	for _, p := range a.sys.Procs {
+		if !present[p.PPID] || p.PPID == p.PID {
+			roots = append(roots, p)
+		}
+	}
+	sort.SliceStable(roots, func(i, j int) bool { return a.less(roots[i], roots[j]) })
+	for _, r := range roots {
+		if mark(r) {
+			walk(r, "", "")
 		}
 	}
 }
@@ -188,18 +314,39 @@ func (a *app) handle(ev tcell.Event) (quit bool) {
 	return false
 }
 
+func (a *app) modalKey(ev *tcell.EventKey) {
+	m := a.modal
+	switch {
+	case m.items != nil:
+		switch ev.Key() {
+		case tcell.KeyUp:
+			m.pick = max(m.pick-1, 0)
+		case tcell.KeyDown:
+			m.pick = min(m.pick+1, len(m.items)-1)
+		case tcell.KeyEnter:
+			a.modal = nil
+			m.onPick(m.pick)
+		case tcell.KeyEscape:
+			a.modal = nil
+		case tcell.KeyRune:
+			if ev.Rune() == 'q' {
+				a.modal = nil
+			}
+		}
+	case m.onYes != nil && (ev.Rune() == 'y' || ev.Rune() == 'Y'):
+		a.modal = nil
+		m.onYes()
+	case m.onYes == nil || ev.Key() == tcell.KeyEscape || ev.Rune() == 'n' || ev.Rune() == 'N' || ev.Rune() == 'q':
+		a.modal = nil
+	}
+}
+
 func (a *app) key(ev *tcell.EventKey) bool {
 	if ev.Key() == tcell.KeyCtrlC {
 		return true
 	}
-	if m := a.modal; m != nil {
-		switch {
-		case m.onYes != nil && (ev.Rune() == 'y' || ev.Rune() == 'Y'):
-			a.modal = nil
-			m.onYes()
-		case m.onYes == nil || ev.Key() == tcell.KeyEscape || ev.Rune() == 'n' || ev.Rune() == 'N' || ev.Rune() == 'q':
-			a.modal = nil
-		}
+	if a.modal != nil {
+		a.modalKey(ev)
 		return false
 	}
 	if a.searching {
@@ -223,12 +370,9 @@ func (a *app) key(ev *tcell.EventKey) bool {
 		return false
 	}
 	n := len(a.rows)
-	if a.view == viewDetail {
-		n = len(a.maps)
-	}
 	pos := &a.sel
 	if a.view == viewDetail {
-		pos = &a.dtop
+		n, pos = len(a.maps), &a.dtop
 	}
 	_, h := a.scr.Size()
 	pg := max(h-10, 1)
@@ -261,9 +405,10 @@ func (a *app) key(ev *tcell.EventKey) bool {
 		a.askFlush()
 	case tcell.KeyF3:
 		a.searching = true
+	case tcell.KeyF5:
+		a.toggleTree()
 	case tcell.KeyF6:
-		a.sortBy = (a.sortBy + 1) % len(sortNames)
-		a.rebuild()
+		a.cycleSort()
 	case tcell.KeyF7:
 		a.askSwapIn()
 	case tcell.KeyF8:
@@ -284,8 +429,9 @@ func (a *app) key(ev *tcell.EventKey) bool {
 		case '/':
 			a.searching = true
 		case 's':
-			a.sortBy = (a.sortBy + 1) % len(sortNames)
-			a.rebuild()
+			a.cycleSort()
+		case 't':
+			a.toggleTree()
 		case 'z':
 			a.hideZero = !a.hideZero
 			a.rebuild()
@@ -303,6 +449,16 @@ func (a *app) key(ev *tcell.EventKey) bool {
 	}
 	*pos = max(0, min(*pos, n-1))
 	return false
+}
+
+func (a *app) cycleSort() {
+	a.sortBy = (a.sortBy + 1) % len(sortNames)
+	a.rebuild()
+}
+
+func (a *app) toggleTree() {
+	a.tree = !a.tree
+	a.rebuild()
 }
 
 func (a *app) current() (Proc, bool) {
@@ -393,10 +549,18 @@ func (a *app) askKill() {
 	if !ok {
 		return
 	}
-	a.modal = &modal{title: "Kill", lines: []string{fmt.Sprintf("Send SIGTERM to %s (%d)?", p.Comm, p.PID)}, onYes: func() {
-		if err := syscall.Kill(p.PID, syscall.SIGTERM); err != nil {
-			a.info("Kill failed", err.Error()+permHint(err))
+	items := make([]string, len(signals))
+	for i, s := range signals {
+		items[i] = fmt.Sprintf("%2d %s", int(s.sig), s.name)
+	}
+	a.modal = &modal{title: fmt.Sprintf("Send signal to %s (%d)", p.Comm, p.PID), items: items, onPick: func(i int) {
+		if err := syscall.Kill(p.PID, signals[i].sig); err != nil {
+			a.info("Signal failed", err.Error()+permHint(err))
+			return
 		}
+		a.mu.Lock()
+		a.status = fmt.Sprintf("Sent %s to %s (%d).", signals[i].name, p.Comm, p.PID)
+		a.mu.Unlock()
 	}}
 }
 
@@ -542,8 +706,11 @@ func (a *app) drawHeader(w int) int {
 	}
 	line := fmt.Sprintf("Commit %s / %s   %d of %d processes in swap   sort: %s", human(m["Committed_AS"]), human(m["CommitLimit"]),
 		a.sys.Swapped, len(a.sys.Procs), sortNames[a.sortBy])
+	if a.tree {
+		line += "   tree"
+	}
 	if a.hideZero {
-		line += " (z: show all)"
+		line += "   (z: show all)"
 	}
 	if a.filter != "" {
 		line += "   filter: " + a.filter
@@ -631,6 +798,14 @@ func (a *app) drawList(w, h int) {
 		if a.fullCmd {
 			cmd = p.Cmd
 		}
+		tst := stDim
+		if i == a.sel {
+			tst = stSel
+		}
+		x = a.put(x, y, p.Tree, tst)
+		if a.tree && p.Swap == 0 && i != a.sel {
+			st = stDim
+		}
 		a.put(x, y, cmd, st)
 		y++
 	}
@@ -671,7 +846,7 @@ func (a *app) drawDetail(w, h int) {
 
 func (a *app) drawHelp() {
 	lines := []string{
-		"swaptop - who is using swap, and how",
+		"swaptop " + version + " - who is using swap, and how",
 		"",
 		"Columns",
 		"  SWAP      swapped memory this process maps: its anonymous pages plus any shared memory (shmem/tmpfs) it has mapped",
@@ -689,12 +864,13 @@ func (a *app) drawHelp() {
 		"  F7 i      swap in:  fault every swapped page of the process back into RAM (reads /proc/PID/mem)",
 		"  F8 o      swap out: ask the kernel to reclaim the process's pages now (process_madvise MADV_PAGEOUT, Linux 5.10+)",
 		"  F2 F      flush:    swapoff + swapon every device, emptying swap completely (root, needs enough free RAM)",
-		"  F9 k      kill (SIGTERM)",
+		"  F9 k      send a signal (picker)",
 		"",
 		"Keys",
 		"  Up/Down PgUp/PgDn Home/End  move          Enter  per-mapping breakdown of the selected process",
-		"  F3 /  search     F6 s  sort     z  show/hide processes with no swap     c  full command line     F10 q  quit",
+		"  F3 /  search     F6 s  sort     F5 t  tree view     z  show/hide processes with no swap     c  full command line     F10 q  quit",
 		"",
+		"Settings (sort, tree, z, c, refresh) are saved to " + configPath() + " on exit.",
 		"Non-root: SWPPSS and actions only work for your own processes (kernel.yama.ptrace_scope).",
 		"",
 		"Press any key to return.",
@@ -715,7 +891,7 @@ func (a *app) drawBottom(w, h int) {
 		a.put(0, y, "Search: "+a.filter+"_", stWarn)
 		return
 	}
-	keys := [][2]string{{"F1", "Help"}, {"F2", "Flush"}, {"F3", "Search"}, {"F6", "SortBy"}, {"F7", "SwapIn"}, {"F8", "SwapOut"}, {"F9", "Kill"}, {"F10", "Quit"}}
+	keys := [][2]string{{"F1", "Help"}, {"F2", "Flush"}, {"F3", "Search"}, {"F5", "Tree"}, {"F6", "SortBy"}, {"F7", "SwapIn"}, {"F8", "SwapOut"}, {"F9", "Kill"}, {"F10", "Quit"}}
 	if a.view != viewList {
 		keys = [][2]string{{"Esc", "Back"}, {"F7", "SwapIn"}, {"F8", "SwapOut"}, {"F9", "Kill"}, {"F10", "Quit"}}
 	}
@@ -729,9 +905,13 @@ func (a *app) drawBottom(w, h int) {
 func (a *app) drawModal(w, h int) {
 	m := a.modal
 	lines := append([]string{}, m.lines...)
-	if m.onYes != nil {
+	switch {
+	case m.items != nil:
+		lines = append(lines, m.items...)
+		lines = append(lines, "", "[Enter] send    [Esc] cancel")
+	case m.onYes != nil:
 		lines = append(lines, "", "[y] yes    [n] no")
-	} else {
+	default:
 		lines = append(lines, "", "[Enter] ok")
 	}
 	bw := len(m.title)
@@ -749,7 +929,14 @@ func (a *app) drawModal(w, h int) {
 	}
 	a.put(x0+2, y0, m.title, st.Bold(true))
 	for i, l := range lines {
-		a.put(x0+2, y0+1+i, l, st)
+		ls := st
+		if m.items != nil && i >= len(m.lines) && i-len(m.lines) == m.pick {
+			ls = stSel
+			for x := x0 + 1; x < x0+bw-1; x++ {
+				a.scr.SetContent(x, y0+1+i, ' ', nil, ls)
+			}
+		}
+		a.put(x0+2, y0+1+i, l, ls)
 	}
 }
 

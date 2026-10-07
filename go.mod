@@ -1,4 +1,4 @@
-module swaptop
+module github.com/andydixon/swaptop
 
 go 1.24.0
 
